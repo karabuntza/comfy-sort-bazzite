@@ -1,58 +1,54 @@
 #!/bin/bash
-VERSION="5.5-mountain-king"
+VERSION="5.6-absolute-zero"
 API_KEY="13b8f7967e886328b2640edaeb70ca2b"
 CONTAINER_NAME="comfy-space"
 
-# Твой реальный путь на другом диске
+# Жесткие пути
 COMFY_ROOT="/var/mnt/09a5645e-a291-438b-bced-bef6edf0d693/ComfyUI"
-EXT_INPUT="$COMFY_ROOT/INPUT"
+INPUT_DIR="$COMFY_ROOT/INPUT"
+LORA_DIR="$COMFY_ROOT/models/loras"
 
 echo "------------------------------------------------"
-echo "🚀 ComfySort Script v$VERSION"
-echo "📂 Работаем с диском: $COMFY_ROOT"
+echo "🚀 ComfySort v$VERSION"
 
-# Авто-поиск папки для Лор внутри твоего пути
-REAL_LORA_PATH=$(find "$COMFY_ROOT" -maxdepth 3 -type d -name "loras" -o -name "lora" | head -n 1)
-
-if [ -z "$REAL_LORA_PATH" ]; then
-    echo "❌ ОШИБКА: Папка для Лор не найдена по пути $COMFY_ROOT"
-    exit 1
-fi
-
-echo "📍 Папка назначения: $REAL_LORA_PATH"
-
+# Проверка контейнера
 if [ "$(podman inspect -f '{{.State.Running}}' $CONTAINER_NAME 2>/dev/null)" != "true" ]; then
-    podman start $CONTAINER_NAME && sleep 3
+    podman start $CONTAINER_NAME && sleep 2
 fi
 
-find "$EXT_INPUT" -maxdepth 1 -type f \( -iname "*.safetensors" -o -iname "*.ckpt" \) | while read -r file; do
-    filename=$(basename "$file")
-    echo "🔍 Анализ: $filename"
+# Переходим в папку и работаем напрямую
+cd "$INPUT_DIR" || { echo "❌ Не могу войти в $INPUT_DIR"; exit 1; }
 
-    # Отправляем файл в контейнер для оценки
+for file in *.safetensors *.ckpt; do
+    # Если файлов нет, bash выдаст саму строку расширения, проверяем это
+    [ -e "$file" ] || continue
+    
+    echo "🔍 Анализ: $file"
+    
+    # Считаем хеш и идем в Civitai через контейнер
     prefix=$(podman exec -i $CONTAINER_NAME bash -c "
         hash=\$(sha256sum | cut -d ' ' -f 1)
         res=\$(curl -s -L -H \"Authorization: Bearer $API_KEY\" \"https://civitai.com/api/v1/model-versions/by-hash/\$hash\")
         
-        prefix=\"\"
         if [[ \"\$res\" == *\"baseModel\"* ]]; then
             base=\$(echo \"\$res\" | jq -r '.baseModel' | tr '[:upper:]' '[:lower:]')
-            [[ \"\$base\" == *\"pony\"* ]] && prefix=\"PONY_\"
-            [[ \"\$base\" == *\"illustrious\"* ]] && prefix=\"ILLUST_\"
-            [[ \"\$base\" == *\"flux\"* ]] && prefix=\"FLUX_\"
-            [[ \"\$base\" == *\"sdxl\"* ]] && prefix=\"SDXL_\"
+            [[ \"\$base\" == *\"pony\"* ]] && echo \"PONY_\" && exit
+            [[ \"\$base\" == *\"illustrious\"* ]] && echo \"ILLUST_\" && exit
+            [[ \"\$base\" == *\"flux\"* ]] && echo \"FLUX_\" && exit
+            [[ \"\$base\" == *\"sdxl\"* ]] && echo \"SDXL_\" && exit
+            echo \"SD_\"
         fi
-        echo \$prefix
     " < "$file")
 
-    [[ "$filename" == *"bikabaka"* ]] && prefix="PONY_"
+    [[ "$file" == *"bikabaka"* ]] && prefix="PONY_"
     [[ -z "$prefix" ]] && prefix="UNKNOWN_"
 
-    if mv "$file" "$REAL_LORA_PATH/${prefix}${filename}"; then
-        echo "✅ УСПЕХ: -> $prefix"
+    if mv "$file" "$LORA_DIR/${prefix}${file}"; then
+        echo "✅ -> $prefix"
     else
-        echo "❌ ОШИБКА перемещения"
+        echo "❌ Ошибка при переносе $file"
     fi
 done
 
+# GitHub sync
 cd ~/scripts/comfy-sort && git add . && git commit -m "v$VERSION" --quiet && git push origin main --quiet
