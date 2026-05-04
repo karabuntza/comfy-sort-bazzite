@@ -1,55 +1,58 @@
 #!/bin/bash
-VERSION="5.1-total-scanner"
+VERSION="5.5-mountain-king"
 API_KEY="13b8f7967e886328b2640edaeb70ca2b"
 CONTAINER_NAME="comfy-space"
 
+# Твой реальный путь на другом диске
+COMFY_ROOT="/var/mnt/09a5645e-a291-438b-bced-bef6edf0d693/ComfyUI"
+EXT_INPUT="$COMFY_ROOT/INPUT"
+
 echo "------------------------------------------------"
 echo "🚀 ComfySort Script v$VERSION"
-echo "🛡️ Ищем папку INPUT внутри контейнера..."
+echo "📂 Работаем с диском: $COMFY_ROOT"
+
+# Авто-поиск папки для Лор внутри твоего пути
+REAL_LORA_PATH=$(find "$COMFY_ROOT" -maxdepth 3 -type d -name "loras" -o -name "lora" | head -n 1)
+
+if [ -z "$REAL_LORA_PATH" ]; then
+    echo "❌ ОШИБКА: Папка для Лор не найдена по пути $COMFY_ROOT"
+    exit 1
+fi
+
+echo "📍 Папка назначения: $REAL_LORA_PATH"
 
 if [ "$(podman inspect -f '{{.State.Running}}' $CONTAINER_NAME 2>/dev/null)" != "true" ]; then
     podman start $CONTAINER_NAME && sleep 3
 fi
 
-podman exec -u root -it $CONTAINER_NAME bash -c '
-# 1. Находим ГДЕ ВООБЩЕ лежит ComfyUI
-ROOT=$(find / -maxdepth 4 -name "models" -type d | grep ComfyUI | head -n 1 | sed "s/\/models//")
-if [ -z "$ROOT" ]; then ROOT="/home/user/ComfyUI"; fi
-
-# 2. Ищем папку INPUT (любым регистром)
-IN_PATH=$(find "$ROOT" -maxdepth 2 -type d -iname "input" | head -n 1)
-LORA_PATH="$ROOT/models/loras"
-
-echo "📍 Нашел вход: $IN_PATH"
-echo "📍 Нашел выход: $LORA_PATH"
-
-# 3. Обработка файлов
-find "$IN_PATH" -maxdepth 2 -type f \( -iname "*.safetensors" -o -iname "*.ckpt" \) | while read -r file; do
+find "$EXT_INPUT" -maxdepth 1 -type f \( -iname "*.safetensors" -o -iname "*.ckpt" \) | while read -r file; do
     filename=$(basename "$file")
-    echo "🔍 Нашел файл: $filename"
-    
-    prefix=""
-    if [[ "$filename" == *"bikabaka"* ]]; then
-        prefix="PONY_"
-    fi
+    echo "🔍 Анализ: $filename"
 
-    if [[ -z "$prefix" ]]; then
-        hash=$(sha256sum "$file" | cut -d " " -f 1)
-        res=$(curl -s -L -H "Authorization: Bearer 13b8f7967e886328b2640edaeb70ca2b" "https://civitai.com/api/v1/model-versions/by-hash/$hash")
-        if [[ -n "$res" && "$res" == *"baseModel"* ]]; then
-            base=$(echo "$res" | jq -r ".baseModel" | tr "[:upper:]" "[:lower:]")
-            [[ "$base" == *"pony"* ]] && prefix="PONY_"
-            [[ "$base" == *"illustrious"* ]] && prefix="ILLUST_"
-            [[ "$base" == *"flux"* ]] && prefix="FLUX_"
-            [[ "$base" == *"sdxl"* ]] && prefix="SDXL_"
+    # Отправляем файл в контейнер для оценки
+    prefix=$(podman exec -i $CONTAINER_NAME bash -c "
+        hash=\$(sha256sum | cut -d ' ' -f 1)
+        res=\$(curl -s -L -H \"Authorization: Bearer $API_KEY\" \"https://civitai.com/api/v1/model-versions/by-hash/\$hash\")
+        
+        prefix=\"\"
+        if [[ \"\$res\" == *\"baseModel\"* ]]; then
+            base=\$(echo \"\$res\" | jq -r '.baseModel' | tr '[:upper:]' '[:lower:]')
+            [[ \"\$base\" == *\"pony\"* ]] && prefix=\"PONY_\"
+            [[ \"\$base\" == *\"illustrious\"* ]] && prefix=\"ILLUST_\"
+            [[ \"\$base\" == *\"flux\"* ]] && prefix=\"FLUX_\"
+            [[ \"\$base\" == *\"sdxl\"* ]] && prefix=\"SDXL_\"
         fi
-    fi
+        echo \$prefix
+    " < "$file")
 
+    [[ "$filename" == *"bikabaka"* ]] && prefix="PONY_"
     [[ -z "$prefix" ]] && prefix="UNKNOWN_"
-    
-    mv "$file" "$LORA_PATH/${prefix}${filename}"
-    echo "✅ ПЕРЕНЕСЕНО: $filename -> $prefix"
+
+    if mv "$file" "$REAL_LORA_PATH/${prefix}${filename}"; then
+        echo "✅ УСПЕХ: -> $prefix"
+    else
+        echo "❌ ОШИБКА перемещения"
+    fi
 done
-'
 
 cd ~/scripts/comfy-sort && git add . && git commit -m "v$VERSION" --quiet && git push origin main --quiet
