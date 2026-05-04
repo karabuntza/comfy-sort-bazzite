@@ -1,35 +1,38 @@
 #!/bin/bash
-VERSION="5.0-diamond"
+VERSION="5.1-total-scanner"
 API_KEY="13b8f7967e886328b2640edaeb70ca2b"
 CONTAINER_NAME="comfy-space"
 
 echo "------------------------------------------------"
 echo "🚀 ComfySort Script v$VERSION"
-echo "🛡️ Зачистка папки INPUT..."
+echo "🛡️ Ищем папку INPUT внутри контейнера..."
 
 if [ "$(podman inspect -f '{{.State.Running}}' $CONTAINER_NAME 2>/dev/null)" != "true" ]; then
     podman start $CONTAINER_NAME && sleep 3
 fi
 
-# Запускаем процесс внутри контейнера
 podman exec -u root -it $CONTAINER_NAME bash -c '
-apt-get update -qq && apt-get install -y -qq curl jq > /dev/null
+# 1. Находим ГДЕ ВООБЩЕ лежит ComfyUI
+ROOT=$(find / -maxdepth 4 -name "models" -type d | grep ComfyUI | head -n 1 | sed "s/\/models//")
+if [ -z "$ROOT" ]; then ROOT="/home/user/ComfyUI"; fi
 
-# Прямое сканирование папки INPUT
-TARGET="/home/user/ComfyUI/models/loras"
-mkdir -p "$TARGET"
+# 2. Ищем папку INPUT (любым регистром)
+IN_PATH=$(find "$ROOT" -maxdepth 2 -type d -iname "input" | head -n 1)
+LORA_PATH="$ROOT/models/loras"
 
-find /home/user/ComfyUI/INPUT /home/user/ComfyUI/input -type f \( -iname "*.safetensors" -o -iname "*.ckpt" \) 2>/dev/null | while read -r file; do
+echo "📍 Нашел вход: $IN_PATH"
+echo "📍 Нашел выход: $LORA_PATH"
+
+# 3. Обработка файлов
+find "$IN_PATH" -maxdepth 2 -type f \( -iname "*.safetensors" -o -iname "*.ckpt" \) | while read -r file; do
     filename=$(basename "$file")
-    echo "🔍 Обработка: $filename"
+    echo "🔍 Нашел файл: $filename"
     
     prefix=""
-    # 1. Проверка на bikabaka
     if [[ "$filename" == *"bikabaka"* ]]; then
         prefix="PONY_"
     fi
 
-    # 2. Civitai Check
     if [[ -z "$prefix" ]]; then
         hash=$(sha256sum "$file" | cut -d " " -f 1)
         res=$(curl -s -L -H "Authorization: Bearer 13b8f7967e886328b2640edaeb70ca2b" "https://civitai.com/api/v1/model-versions/by-hash/$hash")
@@ -42,13 +45,11 @@ find /home/user/ComfyUI/INPUT /home/user/ComfyUI/input -type f \( -iname "*.safe
         fi
     fi
 
-    # Если API не ответил, но файл в INPUT - помечаем как UNKNOWN
     [[ -z "$prefix" ]] && prefix="UNKNOWN_"
-
-    mv "$file" "$TARGET/${prefix}${filename}"
+    
+    mv "$file" "$LORA_PATH/${prefix}${filename}"
     echo "✅ ПЕРЕНЕСЕНО: $filename -> $prefix"
 done
 '
 
-# Синхронизация с твоим GitHub
-cd ~/scripts/comfy-sort && git add . && git commit -m "v$VERSION (Stable)" --quiet && git push origin main --quiet
+cd ~/scripts/comfy-sort && git add . && git commit -m "v$VERSION" --quiet && git push origin main --quiet
